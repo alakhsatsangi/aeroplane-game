@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sky Dash: Endless Runner</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050b1a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        
+        .screen { pointer-events: auto; background: rgba(5, 11, 26, 0.9); padding: 30px; border-radius: 15px; text-align: center; display: none; border: 2px solid #44ccff; box-shadow: 0 0 30px rgba(68, 204, 255, 0.2); }
+        #start-screen { display: block; }
+        
+        button { background: #44ccff; border: none; padding: 15px 40px; font-size: 20px; color: white; border-radius: 5px; cursor: pointer; transition: transform 0.2s; margin-top: 20px; font-weight: bold; text-transform: uppercase; }
+        button:hover { transform: scale(1.1); background: #22aaff; }
+        
+        #hud { position: absolute; top: 20px; left: 20px; font-size: 24px; display: none; text-align: left; }
+        .stat-label { font-size: 12px; color: #44ccff; display: block; letter-spacing: 1px; }
+        h1 { margin: 0 0 10px 0; font-size: 48px; letter-spacing: 5px; color: #44ccff; }
+        .high-score-tag { color: #ffaa00; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="hud">
+            <span class="stat-label">SCORE</span>
+            <span id="score-val">0</span>
+            <div style="margin-top: 10px;">
+                <span class="stat-label">BEST</span>
+                <span id="best-val">0</span>
+            </div>
+        </div>
+
+        <div id="start-screen" class="screen">
+            <h1>SKY DASH</h1>
+            <p>Dodge falling mountains and flying birds!</p>
+            <p>Use <b>A / D</b> or <b>Arrow Keys</b></p>
+            <button onclick="startGame()">START FLIGHT</button>
+        </div>
+
+        <div id="game-over-screen" class="screen">
+            <h1>CRASHED!</h1>
+            <p>Final Score: <span id="final-score">0</span></p>
+            <p id="new-record" class="high-score-tag" style="display:none;">NEW HIGH SCORE!</p>
+            <button onclick="startGame()">TRY AGAIN</button>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, clock;
+        let plane, grid;
+        let obstacles = [];
+        let gameActive = false;
+        let score = 0;
+        let highScore = localStorage.getItem('skyDashHighScore') || 0;
+        let speed = 0.5;
+        let spawnRate = 0.03;
+        let lastDifficultyUpdate = 0;
+        
+        const PLANE_Y = 3;
+        const LANE_WIDTH = 12;
+        const TARGET_X = { val: 0 }; 
+        const COLORS = [0xff4444, 0x44ff44, 0x4444ff, 0xffaa00, 0xeeeeee];
+
+        document.getElementById('best-val').innerText = highScore;
+
+        const keys = { left: false, right: false };
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = true;
+            if (e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = false;
+            if (e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
+        });
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050b1a);
+            scene.fog = new THREE.Fog(0x050b1a, 10, 80);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 8, 10);
+            camera.lookAt(0, 2, -5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+            const sun = new THREE.DirectionalLight(0xffffff, 1);
+            sun.position.set(5, 15, 5);
+            scene.add(sun);
+
+            createEnvironment();
+            createPlane();
+            
+            clock = new THREE.Clock();
+            animate();
+        }
+
+        function createEnvironment() {
+            const floorGeo = new THREE.PlaneGeometry(2000, 2000);
+            const floorMat = new THREE.MeshPhongMaterial({ color: 0x050b1a });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.y = -0.2; 
+            scene.add(floor);
+
+            grid = new THREE.GridHelper(200, 40, 0x44ccff, 0x44ccff);
+            grid.material.transparent = true;
+            grid.material.opacity = 0.3;
+            grid.position.y = 0.05;
+            scene.add(grid);
+        }
+
+        function createPlane() {
+            const group = new THREE.Group();
+            
+            // Enhanced Body
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 3), new THREE.MeshPhongMaterial({ color: 0x3366ff, shininess: 100 }));
+            group.add(body);
+            
+            // Enhanced Wings
+            const wingMat = new THREE.MeshPhongMaterial({ color: 0xffffff });
+            const wing = new THREE.Mesh(new THREE.BoxGeometry(6, 0.2, 1.5), wingMat);
+            wing.position.y = 0.1;
+            group.add(wing);
+            
+            // Tail wing
+            const tail = new THREE.Mesh(new THREE.BoxGeometry(2, 0.1, 1), wingMat);
+            tail.position.set(0, 0.2, 1.2);
+            group.add(tail);
+            
+            // Propeller
+            const prop = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.5, 0.1), new THREE.MeshPhongMaterial({ color: 0x333333 }));
+            prop.position.z = -1.6;
+            prop.name = "propeller";
+            group.add(prop);
+            
+            plane = group;
+            plane.position.y = PLANE_Y;
+            scene.add(plane);
+        }
+
+        function spawnObstacle() {
+            if (!gameActive) return;
+            const isBird = Math.random() > 0.7;
+            let mesh;
+            if (isBird) {
+                mesh = new THREE.Group();
+                const bBody = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.6), new THREE.MeshPhongMaterial({color: 0xffdd00}));
+                const wingL = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.1, 0.5), new THREE.MeshPhongMaterial({color: 0xccaa00}));
+                const wingR = wingL.clone();
+                wingL.position.x = -0.6; wingR.position.x = 0.6;
+                mesh.add(bBody, wingL, wingR);
+                mesh.userData = { type: 'bird', radius: 1, wings: [wingL, wingR] };
+                mesh.position.set((Math.random() - 0.5) * LANE_WIDTH * 2.2, PLANE_Y, -80);
+            } else {
+                const height = 12 + Math.random() * 10;
+                mesh = new THREE.Mesh(new THREE.ConeGeometry(2.5, height, 6), new THREE.MeshPhongMaterial({ color: COLORS[Math.floor(Math.random() * COLORS.length)] }));
+                mesh.position.set((Math.random() - 0.5) * LANE_WIDTH * 2.2, 30, -80);
+                mesh.userData = { type: 'mountain', radius: 1.8, targetY: height/2 };
+            }
+            scene.add(mesh);
+            obstacles.push(mesh);
+        }
+
+        function update() {
+            if (!gameActive) return;
+            if (clock.getElapsedTime() - lastDifficultyUpdate > 8) {
+                speed += 0.04;
+                spawnRate += 0.004;
+                lastDifficultyUpdate = clock.getElapsedTime();
+            }
+            if (keys.left) TARGET_X.val -= 0.6;
+            if (keys.right) TARGET_X.val += 0.6;
+            TARGET_X.val = Math.max(-LANE_WIDTH, Math.min(LANE_WIDTH, TARGET_X.val));
+            plane.position.x += (TARGET_X.val - plane.position.x) * 0.15;
+            plane.rotation.z = (plane.position.x - TARGET_X.val) * 0.25;
+            plane.rotation.y = (TARGET_X.val - plane.position.x) * 0.1;
+            plane.getObjectByName("propeller").rotation.z += 0.8;
+            grid.position.z += speed;
+            if (grid.position.z >= 5) grid.position.z = 0;
+            if (Math.random() < spawnRate) spawnObstacle();
+            
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obj = obstacles[i];
+                obj.position.z += speed;
+                if (obj.userData.type === 'mountain' && obj.position.y > obj.userData.targetY) obj.position.y -= 0.6;
+                if (obj.userData.type === 'bird') {
+                    const time = Date.now() * 0.012;
+                    obj.userData.wings[0].rotation.z = Math.sin(time) * 0.8;
+                    obj.userData.wings[1].rotation.z = -Math.sin(time) * 0.8;
+                }
+                
+                // Collision logic (Updated for wider wingspan)
+                const dx = plane.position.x - obj.position.x;
+                const dz = plane.position.z - obj.position.z;
+                const distance = Math.sqrt(dx*dx + dz*dz);
+                const hitRadius = 3.0 + obj.userData.radius; 
+                const verticalHit = obj.userData.type === 'bird' ? true : (obj.position.y - obj.userData.targetY < 4);
+                
+                if (distance < hitRadius && verticalHit) endGame();
+                
+                if (obj.position.z > 20) {
+                    scene.remove(obj);
+                    obstacles.splice(i, 1);
+                    score += 10;
+                    document.getElementById('score-val').innerText = score;
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            update();
+            renderer.render(scene, camera);
+        }
+
+        window.startGame = function() {
+            score = 0;
+            speed = 0.5;
+            spawnRate = 0.03;
+            TARGET_X.val = 0;
+            plane.position.set(0, PLANE_Y, 0);
+            document.getElementById('score-val').innerText = "0";
+            document.getElementById('new-record').style.display = 'none';
+            obstacles.forEach(obj => scene.remove(obj));
+            obstacles = [];
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('game-over-screen').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            gameActive = true;
+            clock.start();
+            lastDifficultyUpdate = clock.getElapsedTime();
+        };
+
+        function endGame() {
+            gameActive = false;
+            const startTime = Date.now();
+            const shake = () => {
+                const elapsed = Date.now() - startTime;
+                if (elapsed < 300) {
+                    camera.position.x += (Math.random() - 0.5) * 0.8;
+                    camera.position.y += (Math.random() - 0.5) * 0.8;
+                    requestAnimationFrame(shake);
+                } else {
+                    camera.position.set(0, 8, 10);
+                }
+            };
+            shake();
+
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('skyDashHighScore', highScore);
+                document.getElementById('new-record').style.display = 'block';
+                document.getElementById('best-val').innerText = highScore;
+            }
+            document.getElementById('hud').style.display = 'none';
+            document.getElementById('game-over-screen').style.display = 'block';
+            document.getElementById('final-score').innerText = score;
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>
